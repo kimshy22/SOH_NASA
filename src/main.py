@@ -1,5 +1,3 @@
-# src/main.py
-
 import os
 import json
 
@@ -9,13 +7,21 @@ from preprocess import preprocess_dataframe
 from capacity import compute_capacity_profile
 from validators import classify_event
 from soh import compute_event_soh
-from visualize import plot_soh_trend
+from visualize import (
+    plot_soh_trend,
+    plot_soh_trend_all_batteries,
+    plot_per_battery,
+    plot_all_batteries_on_one_graph,
+)
 
 
 def ensure_directories():
     os.makedirs("../data/processed", exist_ok=True)
     os.makedirs("../results/summaries", exist_ok=True)
     os.makedirs("../results/plots", exist_ok=True)
+    os.makedirs("../results/plots/voltage_per_battery", exist_ok=True)
+    os.makedirs("../results/plots/current_per_battery", exist_ok=True)
+    os.makedirs("../results/plots/temperature_per_battery", exist_ok=True)
 
 
 def summarize_discharge_capacity_for_event(event_df):
@@ -42,10 +48,7 @@ def get_event_battery_config(event_df):
 
 def apply_monotonic_smoothing(discharge_results):
     """
-    Enforce a non-increasing SOH trend per battery.
-
-    Full-discharge points usually have higher confidence.
-    Partial-discharge points usually have lower confidence.
+    Enforce a non-increasing SOH trend per battery using NASA cycle_id order.
     """
     by_battery = {}
 
@@ -53,7 +56,7 @@ def apply_monotonic_smoothing(discharge_results):
         by_battery.setdefault(item["battery_id"], []).append(item)
 
     for battery_id, items in by_battery.items():
-        items.sort(key=lambda x: x["detected_cycle_number"])
+        items.sort(key=lambda x: x["cycle_id"])
 
         previous_smoothed = None
 
@@ -99,7 +102,59 @@ def run_pipeline(file_path, preprocess_config):
 
     df = compute_capacity_profile(df)
 
-    print("\nFirst 20 rows of event grouping:")
+    # Plot voltage/current/temperature for each battery separately
+    plot_per_battery(
+        df,
+        column="voltage_v",
+        ylabel="Voltage (V)",
+        title="Voltage vs Time",
+        save_dir="../results/plots/voltage_per_battery"
+    )
+
+    plot_per_battery(
+        df,
+        column="current_a",
+        ylabel="Current (A)",
+        title="Current vs Time",
+        save_dir="../results/plots/current_per_battery"
+    )
+
+    if "temperature_c" in df.columns:
+        plot_per_battery(
+            df,
+            column="temperature_c",
+            ylabel="Temperature (°C)",
+            title="Temperature vs Time",
+            save_dir="../results/plots/temperature_per_battery"
+        )
+
+    # Plot all batteries together on one graph
+    plot_all_batteries_on_one_graph(
+        df,
+        column="voltage_v",
+        ylabel="Voltage (V)",
+        title="Voltage vs Time Across All Batteries",
+        save_path="../results/plots/voltage_all_batteries.png"
+    )
+
+    plot_all_batteries_on_one_graph(
+        df,
+        column="current_a",
+        ylabel="Current (A)",
+        title="Current vs Time Across All Batteries",
+        save_path="../results/plots/current_all_batteries.png"
+    )
+
+    if "temperature_c" in df.columns:
+        plot_all_batteries_on_one_graph(
+            df,
+            column="temperature_c",
+            ylabel="Temperature (°C)",
+            title="Temperature vs Time Across All Batteries",
+            save_path="../results/plots/temperature_all_batteries.png"
+        )
+
+    print("\nFirst 20 rows after preprocessing:")
     preview_cols = ["time_s", "current_a", "row_mode", "event_id"]
 
     extra_cols = []
@@ -110,32 +165,38 @@ def run_pipeline(file_path, preprocess_config):
 
     print(df[extra_cols + preview_cols].head(20))
 
-    print("\nEvent sizes (first 20 raw event IDs):")
-    print(df.groupby("event_id").size().head(20))
+    print("\nCycle sizes (first 20 battery_id + cycle_id groups):")
+    print(df.groupby(["battery_id", "cycle_id"]).size().head(20))
 
     event_results = []
 
-    for event_id, event_df in df.groupby("event_id"):
+    # Use NASA battery_id + cycle_id as the main unit of analysis
+    for (battery_id_key, cycle_id_key), cycle_df in df.groupby(["battery_id", "cycle_id"], sort=True):
+        # Keep only the discharge portion of the cycle
+        discharge_df = cycle_df[cycle_df["row_mode"] == "discharge"].copy()
+
+        # Skip cycles with no discharge rows
+        if discharge_df.empty:
+            continue
+
         # Skip tiny noisy fragments
-        if len(event_df) < 100:
+        if len(discharge_df) < 100:
             continue
 
         battery_id, config_name, event_config = get_event_battery_config(
-            event_df)
+            discharge_df)
 
-        event_validation = classify_event(event_df, event_config)
-
-        event_capacity_ah = 0.0
-        if event_validation["row_mode"] == "discharge":
-            event_capacity_ah = summarize_discharge_capacity_for_event(
-                event_df)
+        event_validation = classify_event(discharge_df, event_config)
+        event_capacity_ah = summarize_discharge_capacity_for_event(
+            discharge_df)
 
         soh_result = compute_event_soh(
             event_capacity_ah, event_validation, event_config
         )
 
         event_results.append({
-            "event_id": int(event_id),
+            "event_id": int(discharge_df["event_id"].iloc[0]),
+            "cycle_id": int(cycle_id_key),
             "battery_id": battery_id,
             "config_name": config_name,
             "event_validation": event_validation,
@@ -148,29 +209,26 @@ def run_pipeline(file_path, preprocess_config):
         if item["event_validation"]["row_mode"] == "discharge"
     ]
 
-    # Sort by battery, then by event start time
+    # Sort by battery, then by original NASA cycle_id
     discharge_results = sorted(
         discharge_results,
-        key=lambda x: (x["battery_id"], x["event_validation"]["start_time_s"])
+        key=lambda x: (x["battery_id"], x["cycle_id"])
     )
 
-    # Assign clean cycle numbers per battery
-    battery_cycle_counters = {}
-
-    for item in discharge_results:
-        battery_id = item["battery_id"]
-        battery_cycle_counters.setdefault(battery_id, 0)
-        battery_cycle_counters[battery_id] += 1
-        item["detected_cycle_number"] = battery_cycle_counters[battery_id]
-
-    # Apply monotonic smoothing after cycle numbering
+    # Apply monotonic smoothing using cycle_id order
     apply_monotonic_smoothing(discharge_results)
 
-    # Optional plot for one battery
+    # Plot SOH for one battery
     plot_soh_trend(
         discharge_results,
         save_path="../results/plots/soh_trend_B0005.png",
         battery_id="B0005"
+    )
+
+    # Plot SOH for all batteries
+    plot_soh_trend_all_batteries(
+        discharge_results,
+        save_path="../results/plots/soh_trend_all_batteries.png"
     )
 
     base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -202,7 +260,7 @@ def run_pipeline(file_path, preprocess_config):
 
             print(
                 f"\nBattery {item['battery_id']} | "
-                f"Detected Cycle {item['detected_cycle_number']} | "
+                f"NASA Cycle {item['cycle_id']} | "
                 f"raw event_id: {item['event_id']} | "
                 f"config: {item['config_name']}"
             )
@@ -249,6 +307,11 @@ def run_pipeline(file_path, preprocess_config):
     print(f"  Processed CSV: {processed_csv_path}")
     print(f"  Summary JSON:  {summary_json_path}")
     print("  Plot:         ../results/plots/soh_trend_B0005.png")
+    print("  Plot:         ../results/plots/soh_trend_all_batteries.png")
+    print("  Plot:         ../results/plots/voltage_all_batteries.png")
+    print("  Plot:         ../results/plots/current_all_batteries.png")
+    if "temperature_c" in df.columns:
+        print("  Plot:         ../results/plots/temperature_all_batteries.png")
 
 
 if __name__ == "__main__":

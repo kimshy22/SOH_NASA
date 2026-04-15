@@ -2,7 +2,7 @@ NASA_COMMON_CONFIG = {
     "reference_capacity_ah": 2.0,
     "nominal_voltage_v": 3.7,
     "expected_full_charge_v": 4.2,
-    "full_start_voltage_threshold_v": 4.0,
+    "full_start_voltage_threshold_v": 3.95,
     "min_discharge_duration_s": 1500,
     "min_voltage_drop_v": 0.50,
     "max_time_gap_s": 60,
@@ -20,18 +20,18 @@ DATASET_CONFIGS = {
     },
     "nasa_b0006": {
         **NASA_COMMON_CONFIG,
-        "expected_cutoff_v": 2.5,
-        "partial_or_full_cutoff_threshold_v": 2.55,
+        "expected_cutoff_v": 2.7,
+        "partial_or_full_cutoff_threshold_v": 2.75,
     },
     "nasa_b0007": {
         **NASA_COMMON_CONFIG,
-        "expected_cutoff_v": 2.2,
-        "partial_or_full_cutoff_threshold_v": 2.25,
+        "expected_cutoff_v": 2.7,
+        "partial_or_full_cutoff_threshold_v": 2.75,
     },
     "nasa_b0018": {
         **NASA_COMMON_CONFIG,
-        "expected_cutoff_v": 2.5,
-        "partial_or_full_cutoff_threshold_v": 2.55,
+        "expected_cutoff_v": 2.7,
+        "partial_or_full_cutoff_threshold_v": 2.75,
     },
 }
 
