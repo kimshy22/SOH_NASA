@@ -1,5 +1,6 @@
 import os
 import json
+import pandas as pd
 
 from config import DATASET_CONFIGS, NASA_COMMON_CONFIG, NASA_BATTERY_CONFIG_MAP
 from loaders import load_and_standardize_file
@@ -48,7 +49,14 @@ def get_event_battery_config(event_df):
 
 def apply_monotonic_smoothing(discharge_results):
     """
-    Enforce a non-increasing SOH trend per battery using NASA cycle_id order.
+    Apply soft monotonic smoothing per battery using NASA cycle_id order.
+
+    Idea:
+    - Keep the general degradation trend decreasing.
+    - Allow small upward recovery when the raw point is only slightly above
+      the previous smoothed value.
+    - Trust full-discharge points more than partial-discharge points.
+    - Prevent large unrealistic upward jumps.
     """
     by_battery = {}
 
@@ -62,29 +70,108 @@ def apply_monotonic_smoothing(discharge_results):
 
         for item in items:
             soh = item["soh_result"]
+            event_type = item["event_validation"].get("event_type", "unknown")
 
             raw = soh.get("soh_percent_raw")
             if raw is None:
                 raw = soh.get("soh_percent")
-
-            confidence = soh.get("confidence", 0.5)
 
             if raw is None:
                 soh["soh_percent_smoothed"] = previous_smoothed
                 soh["soh_percent"] = previous_smoothed
                 continue
 
+            # Give higher trust to direct full-discharge points
+            if event_type == "full_discharge":
+                confidence = 0.85
+                max_upward_recovery = 0.30
+            elif event_type == "partial_discharge":
+                confidence = 0.55
+                max_upward_recovery = 0.10
+            else:
+                confidence = 0.50
+                max_upward_recovery = 0.10
+
             if previous_smoothed is None:
                 smoothed = raw
             else:
                 weighted = confidence * raw + \
                     (1.0 - confidence) * previous_smoothed
-                smoothed = min(previous_smoothed, weighted)
+
+                if weighted <= previous_smoothed:
+                    smoothed = weighted
+                else:
+                    allowed_upper = previous_smoothed + max_upward_recovery
+                    smoothed = min(weighted, allowed_upper)
 
             soh["soh_percent_smoothed"] = float(smoothed)
             soh["soh_percent"] = float(smoothed)
 
             previous_smoothed = smoothed
+
+
+def build_cycle_level_dataframe(discharge_results):
+    """
+    Convert discharge_results into a clean cycle-level dataframe.
+    Each row represents one discharge cycle.
+    """
+    rows = []
+
+    for item in discharge_results:
+        ev = item["event_validation"]
+        soh = item["soh_result"]
+
+        row = {
+            "battery_id": item["battery_id"],
+            "cycle_id": item["cycle_id"],
+            "config_name": item["config_name"],
+            "event_id": item["event_id"],
+            "event_type": ev.get("event_type"),
+            "valid_for_direct_soh": ev.get("valid_for_direct_soh"),
+            "row_mode": ev.get("row_mode"),
+
+            # Capacity / SOH
+            "measured_capacity_ah": soh.get("event_capacity_ah"),
+            "corrected_capacity_ah": soh.get("corrected_capacity_ah"),
+            "estimated_full_capacity_ah": soh.get("estimated_full_capacity_ah"),
+            "reference_capacity_ah": soh.get("reference_capacity_ah"),
+            "soh_percent": soh.get("soh_percent"),
+            "soh_percent_smoothed": soh.get("soh_percent_smoothed"),
+            "soh_status": soh.get("soh_status"),
+
+            # Validation / cycle statistics
+            "duration_s": ev.get("duration_s"),
+            "num_rows": ev.get("num_rows"),
+            "start_time_s": ev.get("start_time_s"),
+            "end_time_s": ev.get("end_time_s"),
+            "start_voltage_v": ev.get("start_voltage_v"),
+            "end_voltage_v": ev.get("end_voltage_v"),
+            "min_voltage_v": ev.get("min_voltage_v"),
+            "max_voltage_v": ev.get("max_voltage_v"),
+            "voltage_drop_v": ev.get("voltage_drop_v"),
+            "avg_discharge_current_a": ev.get("avg_discharge_current_a"),
+            "avg_charge_current_a": ev.get("avg_charge_current_a"),
+            "avg_temperature_c": ev.get("avg_temperature_c"),
+
+            # SOC window fields if partial correction was used
+            "soc_start": soh.get("soc_start"),
+            "soc_end": soh.get("soc_end"),
+            "soc_window": soh.get("soc_window"),
+            "needs_soc_window_correction": soh.get("needs_soc_window_correction"),
+
+            # Notes as text
+            "notes": " | ".join(soh.get("notes", []))
+        }
+
+        rows.append(row)
+
+    cycle_df = pd.DataFrame(rows)
+
+    if not cycle_df.empty:
+        cycle_df = cycle_df.sort_values(
+            ["battery_id", "cycle_id"]).reset_index(drop=True)
+
+    return cycle_df
 
 
 def run_pipeline(file_path, preprocess_config):
@@ -215,8 +302,11 @@ def run_pipeline(file_path, preprocess_config):
         key=lambda x: (x["battery_id"], x["cycle_id"])
     )
 
-    # Apply monotonic smoothing using cycle_id order
+    # Apply softened smoothing using cycle_id order
     apply_monotonic_smoothing(discharge_results)
+
+    # Build cycle-level dataframe for prediction stage
+    cycle_level_df = build_cycle_level_dataframe(discharge_results)
 
     # Plot SOH for one battery
     plot_soh_trend(
@@ -234,9 +324,11 @@ def run_pipeline(file_path, preprocess_config):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
 
     processed_csv_path = f"../data/processed/{base_name}_processed.csv"
+    cycle_level_csv_path = f"../data/processed/{base_name}_cycle_level.csv"
     summary_json_path = f"../results/summaries/{base_name}_summary.json"
 
     df.to_csv(processed_csv_path, index=False)
+    cycle_level_df.to_csv(cycle_level_csv_path, index=False)
 
     summary = {
         "file_name": file_path,
@@ -304,14 +396,15 @@ def run_pipeline(file_path, preprocess_config):
             print(f"  notes: {soh['notes']}")
 
     print("\nSaved:")
-    print(f"  Processed CSV: {processed_csv_path}")
-    print(f"  Summary JSON:  {summary_json_path}")
-    print("  Plot:         ../results/plots/soh_trend_B0005.png")
-    print("  Plot:         ../results/plots/soh_trend_all_batteries.png")
-    print("  Plot:         ../results/plots/voltage_all_batteries.png")
-    print("  Plot:         ../results/plots/current_all_batteries.png")
+    print(f"  Processed CSV:     {processed_csv_path}")
+    print(f"  Cycle-level CSV:   {cycle_level_csv_path}")
+    print(f"  Summary JSON:      {summary_json_path}")
+    print("  Plot:              ../results/plots/soh_trend_B0005.png")
+    print("  Plot:              ../results/plots/soh_trend_all_batteries.png")
+    print("  Plot:              ../results/plots/voltage_all_batteries.png")
+    print("  Plot:              ../results/plots/current_all_batteries.png")
     if "temperature_c" in df.columns:
-        print("  Plot:         ../results/plots/temperature_all_batteries.png")
+        print("  Plot:              ../results/plots/temperature_all_batteries.png")
 
 
 if __name__ == "__main__":
