@@ -1,0 +1,46 @@
+{
+    "battery_id": "B0007",
+    "chemistry": "LCO",
+    "window_size": 5,
+    "eol_threshold": 70.0,
+    "feature_cols": [
+        "soh_current",
+        "capacity_ratio",
+        "corrected_capacity_ah",
+        "recent_slope_3",
+        "avg_temperature_c",
+        "voltage_drop_v"
+    ],
+    "target_type": "delta_soh",
+    "short_horizon_model": {
+        "horizon": 1,
+        "method": "recent_slope_3"
+    },
+    "lstm_models": {
+        "5": {
+            "weights": "b0007_lstm_h5_weights.weights.h5",
+            "feature_scaler": "b0007_feature_scaler_h5.pkl",
+            "target_scaler": "b0007_target_scaler_h5.pkl"
+        },
+        "10": {
+            "weights": "b0007_lstm_h10_weights.weights.h5",
+            "feature_scaler": "b0007_feature_scaler_h10.pkl",
+            "target_scaler": "b0007_target_scaler_h10.pkl"
+        },
+        "20": {
+            "weights": "b0007_lstm_h20_weights.weights.h5",
+            "feature_scaler": "b0007_feature_scaler_h20.pkl",
+            "target_scaler": "b0007_target_scaler_h20.pkl"
+        }
+    },
+    "rul_model": {
+        "method": "rolling_slope",
+        "rolling_window": 5
+    },
+    "architecture": {
+        "lstm_units": 8,
+        "dropout": 0.2,
+        "dense_units": 8,
+        "learning_rate": 0.0003
+    }
+}

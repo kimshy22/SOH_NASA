@@ -1,0 +1,27 @@
+{
+    "feature_cols": [
+        "cycle_id",
+        "corrected_capacity_ah",
+        "duration_s",
+        "avg_discharge_current_a",
+        "avg_temperature_c",
+        "start_voltage_v",
+        "end_voltage_v"
+    ],
+    "target_col": "soh_percent_smoothed",
+    "window_size": 10,
+    "horizon": 1,
+    "train_batteries": [
+        "B0005",
+        "B0006"
+    ],
+    "val_batteries": [
+        "B0007"
+    ],
+    "test_batteries": [
+        "B0018"
+    ],
+    "model_type": "Compact LSTM for cycle-level SOH prognosis",
+    "chemistry": "LCO",
+    "dataset": "NASA Ames Prognostics Center Battery Dataset"
+}

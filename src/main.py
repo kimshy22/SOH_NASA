@@ -399,8 +399,8 @@ def run_pipeline(file_path, preprocess_config):
     print(f"  Processed CSV:     {processed_csv_path}")
     print(f"  Cycle-level CSV:   {cycle_level_csv_path}")
     print(f"  Summary JSON:      {summary_json_path}")
-    print("  Plot:              ../results/plots/soh_trend_B0005.png")
-    print("  Plot:              ../results/plots/soh_trend_all_batteries.png")
+    print("  Plot:              ../results/plots/soh_trend_B0007.png")
+    # print("  Plot:              ../results/plots/soh_trend_all_batteries.png")
     print("  Plot:              ../results/plots/voltage_all_batteries.png")
     print("  Plot:              ../results/plots/current_all_batteries.png")
     if "temperature_c" in df.columns:
@@ -408,7 +408,7 @@ def run_pipeline(file_path, preprocess_config):
 
 
 if __name__ == "__main__":
-    input_file = "..\\data\\raw\\NASA_Combined.csv"
+    input_file = "..\\data\\raw\\B0007.csv"
 
     # Common preprocessing config
     preprocess_config = NASA_COMMON_CONFIG
